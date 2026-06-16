@@ -26,7 +26,7 @@ def conectar_postgresql():
         print("❌ Error: No se pudo conectar a PostgreSQL.")
         sys.exit(1)
 
-    return conn.cursor()
+    return conn
 
 conn = conectar_postgresql()
 

@@ -199,20 +199,17 @@ resource "aws_instance" "worker" {
     
     cd archivosWorker
     
-    # Inyectar la IP de Postgres Y DE RABBITMQ
-    sed -i 's/IP_DE_TU_POSTGRES/${aws_instance.postgres.private_ip}/g' indirect_worker.py
-    sed -i 's/IP_DE_RABBITMQ/${aws_instance.rabbitmq.private_ip}/g' indirect_worker.py
-    
     # Añadimos variables de entorno
-    echo "export REDIS_HOST=${aws_instance.redis.private_ip}" >> /home/ec2-user/.bashrc
+    echo "export DB_HOST=${aws_instance.postgres.private_ip}" >> /home/ec2-user/.bashrc
     echo "export RABBITMQ_HOST=${aws_instance.rabbitmq.private_ip}" >> /home/ec2-user/.bashrc
-    export REDIS_HOST=${aws_instance.redis.private_ip}
+    export DB_HOST=${aws_instance.postgres.private_ip}
     export RABBITMQ_HOST=${aws_instance.rabbitmq.private_ip}
     
-    python3 -m venv venv && venv/bin/pip install redis pika
+    # INSTALAMOS psycopg2-binary en vez de redis
+    python3 -m venv venv && venv/bin/pip install psycopg2-binary pika
     
-    # Arrancar API y configurar reinicios con systemd de forma segura
-    sudo bash -c "echo -e '[Unit]\nDescription=Indirect Worker\nAfter=network.target\n\n[Service]\nType=simple\nUser=ec2-user\nWorkingDirectory=/home/ec2-user/archivosWorker\nEnvironment=REDIS_HOST=${aws_instance.redis.private_ip}\nEnvironment=RABBITMQ_HOST=${aws_instance.rabbitmq.private_ip}\nExecStart=/home/ec2-user/archivosWorker/venv/bin/python3 indirect_worker.py\nRestart=always\nRestartSec=5\nLimitNOFILE=65535\n\n[Install]\nWantedBy=multi-user.target' > /etc/systemd/system/indirect-worker.service"
+    # Arrancar API y configurar reinicios con systemd de forma segura (CAMBIADO A DB_HOST y postgres.private_ip)
+    sudo bash -c "echo -e '[Unit]\nDescription=Indirect Worker\nAfter=network.target\n\n[Service]\nType=simple\nUser=ec2-user\nWorkingDirectory=/home/ec2-user/archivosWorker\nEnvironment=DB_HOST=${aws_instance.postgres.private_ip}\nEnvironment=RABBITMQ_HOST=${aws_instance.rabbitmq.private_ip}\nExecStart=/home/ec2-user/archivosWorker/venv/bin/python3 indirect_worker.py\nRestart=always\nRestartSec=5\nLimitNOFILE=65535\n\n[Install]\nWantedBy=multi-user.target' > /etc/systemd/system/indirect-worker.service"
     sudo systemctl daemon-reload
     sudo systemctl enable indirect-worker
     sudo systemctl start indirect-worker
@@ -250,7 +247,6 @@ resource "aws_instance" "client" {
     
     # Guardamos las IPs para el cliente y el ulimit automático
     echo "export RABBITMQ_HOST=${aws_instance.rabbitmq.private_ip}" >> /home/ec2-user/.bashrc
-    echo "export REDIS_HOST=${aws_instance.redis.private_ip}" >> /home/ec2-user/.bashrc
     echo "ulimit -n 65535" >> /home/ec2-user/.bashrc
   EOF
 }
