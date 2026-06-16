@@ -10,12 +10,15 @@ DB_HOST = os.getenv('DB_HOST', 'localhost')
 RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')
 QUEUE_NAME = 'booking_queue'
 
+max_reintentos = 15
+
 def conectar_postgresql():
     # 1. Esperar a que PostgreSQL esté listo
     conn = None
     for i in range(15):
         try:
             conn = psycopg2.connect(dbname="ticketdb", user="admin", password="admin123", host=DB_HOST, port="5432")
+            conn.autocommit = False
             print("✅ Conectado a PostgreSQL.")
             break
         except Exception as e:
@@ -151,7 +154,8 @@ def procesar_mensaje(ch, method, props, body):
 
 # Arrancamos el bucle infinito
 def iniciar_consumo():
-    global connection, channel
+    # AÑADIR conn a las variables globales para poder reconectarla
+    global connection, channel, conn
     while True:
         try:
             channel.basic_consume(queue=QUEUE_NAME, on_message_callback=procesar_mensaje)
@@ -160,9 +164,17 @@ def iniciar_consumo():
             print(f"⚠️ Conexión con RabbitMQ perdida ({e}). Reconectando en 5 segundos...")
             time.sleep(5)
             connection, channel = conectar_rabbitmq()
+            
+        # AÑADIR ESTE BLOQUE POR SI FALLA LA BASE DE DATOS
+        except psycopg2.InterfaceError:
+            print(f"⚠️ Conexión con PostgreSQL perdida. Reconectando en 5 segundos...")
+            time.sleep(5)
+            conn = conectar_postgresql()
+            
         except KeyboardInterrupt:
             print("\nApagando worker de forma segura...")
             connection.close()
+            conn.close() # Cerramos también la base de datos
             break
         except Exception as e:
             print(f"⚠️ Error inesperado ({e}). Reconectando en 5 segundos...")
