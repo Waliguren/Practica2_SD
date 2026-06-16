@@ -84,8 +84,8 @@ resource "aws_security_group" "worker_sg" {
   }
 }
 
-resource "aws_security_group" "redis_sg" {
-  name = "indirect_redis_sg"
+resource "aws_security_group" "postgres_sg" {
+  name = "indirect_postgres_sg"
   
   ingress { 
     from_port   = 22
@@ -94,8 +94,8 @@ resource "aws_security_group" "redis_sg" {
     cidr_blocks = ["0.0.0.0/0"] 
   }
   ingress { 
-    from_port       = 6379
-    to_port         = 6379
+    from_port       = 5432
+    to_port         = 5432
     protocol        = "tcp"
     security_groups = [aws_security_group.worker_sg.id, aws_security_group.client_sg.id] 
   }
@@ -110,19 +110,36 @@ resource "aws_security_group" "redis_sg" {
 # ==========================================
 # INSTANCIAS EC2
 # ==========================================
-resource "aws_instance" "redis" {
+resource "aws_instance" "postgres" {
   ami                    = data.aws_ami.amazon_linux.id
   instance_type          = "t3.micro"
   key_name               = "clave-rabbitmq-server"
-  vpc_security_group_ids = [aws_security_group.redis_sg.id]
-  tags                   = { Name = "Redis-Indirect" }
+  vpc_security_group_ids = [aws_security_group.postgres_sg.id]
+  tags                   = { Name = "Postgres-Indirect" }
   
   user_data = <<-EOF
     #!/bin/bash
     while pidof dnf > /dev/null; do sleep 5; done
     dnf update -y && dnf install docker -y
     systemctl start docker && systemctl enable docker
-    docker run -d --name mi-redis --restart unless-stopped -p 6379:6379 redis:latest redis-server --requirepass "admin123"
+    docker run -d --name mi-postgres --restart unless-stopped -e POSTGRES_USER=admin -e POSTGRES_PASSWORD=admin123 -e POSTGRES_DB=ticketdb -p 5432:5432 postgres:latest
+    
+    while pidof dnf > /dev/null; do sleep 5; done
+    dnf update -y && dnf install -y python3 python3-pip git
+    
+    cd /home/ec2-user 
+    git clone https://github.com/waliguren/nuevapractica1_sd.git repo
+    mv repo/archivosPostgres ./
+    rm -rf repo
+
+    cd /home/ec2-user/archivosPostgres
+    
+    # Crear entorno virtual e instalar el conector de PostgreSQL
+    python3 -m venv venv
+    venv/bin/pip install psycopg2-binary
+    
+    # Ejecutar el script para crear las tablas y datos iniciales
+    venv/bin/python init_db.py
   EOF
 }
 
@@ -182,8 +199,8 @@ resource "aws_instance" "worker" {
     
     cd archivosWorker
     
-    # Inyectar la IP de Redis Y DE RABBITMQ
-    sed -i 's/IP_DE_TU_REDIS/${aws_instance.redis.private_ip}/g' indirect_worker.py
+    # Inyectar la IP de Postgres Y DE RABBITMQ
+    sed -i 's/IP_DE_TU_POSTGRES/${aws_instance.postgres.private_ip}/g' indirect_worker.py
     sed -i 's/IP_DE_RABBITMQ/${aws_instance.rabbitmq.private_ip}/g' indirect_worker.py
     
     # Añadimos variables de entorno
