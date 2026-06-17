@@ -240,8 +240,9 @@ resource "aws_instance" "rabbitmq" {
     mv repo/archivosRabbit ./
     rm -rf repo
 
+    export SQS_QUEUE_URL=${aws_sqs_queue.main.url}
     echo "export SQS_QUEUE_URL=${aws_sqs_queue.main.url}" >> /home/ec2-user/.bashrc
-    nohup python3 /home/ec2-user/archivosRabbit/forwarder_v3.py > /home/ec2-user/forwarder.log 2>&1 &
+    nohup python3 /home/ec2-user/archivosRabbit/forwarder.py > /home/ec2-user/forwarder.log 2>&1 &
   EOF
 }
 
@@ -307,55 +308,6 @@ resource "aws_lambda_function" "worker" {
       SQS_QUEUE_URL = aws_sqs_queue.main.url
     }
   }
-}
-
-resource "aws_lambda_event_source_mapping" "sqs_trigger" {
-  event_source_arn        = aws_sqs_queue.main.arn
-  function_name           = aws_lambda_function.worker.arn
-  batch_size              = 10
-  function_response_types = ["ReportBatchItemFailures"]
-}
-
-# ==========================================
-# LAMBDA: SCALING CONTROLLER
-# ==========================================
-resource "aws_lambda_function" "scaling_controller" {
-  filename         = "../archivosWorker/scaling_controller.zip"
-  source_code_hash = filebase64sha256("../archivosWorker/scaling_controller.zip")
-  function_name    = local.scaling_lambda
-  role             = data.aws_iam_role.lab_role.arn
-  handler          = "scaling_controller.lambda_handler"
-  runtime          = "python3.10"
-  timeout          = 30
-
-  environment {
-    variables = {
-      SQS_QUEUE_URL        = aws_sqs_queue.main.url
-      LAMBDA_FUNCTION_NAME = local.lambda_name
-      TARGET_RESPONSE_TIME = "5"
-      MIN_CONCURRENCY      = "1"
-      MAX_CONCURRENCY      = "5"
-      CAPACITY_PER_WORKER  = "8.0"
-    }
-  }
-}
-
-resource "aws_cloudwatch_event_rule" "scaling_schedule" {
-  name                = "scaling-controller-1min"
-  schedule_expression = "rate(1 minute)"
-}
-
-resource "aws_cloudwatch_event_target" "scaling_target" {
-  rule = aws_cloudwatch_event_rule.scaling_schedule.name
-  arn  = aws_lambda_function.scaling_controller.arn
-}
-
-resource "aws_lambda_permission" "allow_events" {
-  statement_id  = "AllowExecutionFromCloudWatch"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.scaling_controller.function_name
-  principal     = "events.amazonaws.com"
-  source_arn    = aws_cloudwatch_event_rule.scaling_schedule.arn
 }
 
 # ==========================================
