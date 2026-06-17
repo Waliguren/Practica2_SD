@@ -16,8 +16,6 @@ data "aws_ami" "amazon_linux" {
   }
 }
 
-#Editate
-
 # ==========================================
 # SECURITY GROUPS (Arquitectura Indirecta)
 # ==========================================
@@ -152,7 +150,6 @@ resource "aws_instance" "rabbitmq" {
   
   user_data = <<-EOF
     #!/bin/bash
-    # Límites de Kernel para absorber la cola masiva
     echo "fs.file-max = 2097152" >> /etc/sysctl.conf
     echo "net.core.somaxconn = 65535" >> /etc/sysctl.conf
     echo "net.ipv4.tcp_max_syn_backlog = 65535" >> /etc/sysctl.conf
@@ -165,54 +162,7 @@ resource "aws_instance" "rabbitmq" {
     dnf update -y && dnf install docker -y
     systemctl start docker && systemctl enable docker
     
-    # Arrancamos RabbitMQ con credenciales personalizadas para evitar el bloqueo remoto de "guest"
     docker run -d --name mi-rabbit --restart unless-stopped --ulimit nofile=65535:65535 -e RABBITMQ_DEFAULT_USER=admin -e RABBITMQ_DEFAULT_PASS=admin123 -p 5672:5672 -p 15672:15672 rabbitmq:3-management
-  EOF
-}
-
-resource "aws_instance" "worker" {
-  count                  = 4
-  ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = "t3.micro"
-  key_name               = "clave-rabbitmq-server"
-  vpc_security_group_ids = [aws_security_group.worker_sg.id]
-  tags                   = { Name = "Worker-Indirect-${count.index + 1}" }
-  
-  user_data = <<-EOF
-    #!/bin/bash
-    # Límites de red para los workers
-    echo "fs.file-max = 2097152" >> /etc/sysctl.conf
-    echo "net.core.somaxconn = 65535" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_max_syn_backlog = 65535" >> /etc/sysctl.conf
-    echo "net.ipv4.ip_local_port_range = 1024 65535" >> /etc/sysctl.conf
-    sysctl -p
-    echo "* soft nofile 65535" >> /etc/security/limits.conf
-    echo "* hard nofile 65535" >> /etc/security/limits.conf
-
-    while pidof dnf > /dev/null; do sleep 5; done
-    dnf update -y && dnf install -y python3 python3-pip git
-    
-    cd /home/ec2-user 
-    git clone https://github.com/Waliguren/practica2_sd.git repo
-    mv repo/archivosWorker ./
-    rm -rf repo
-    
-    cd archivosWorker
-    
-    # Añadimos variables de entorno
-    echo "export DB_HOST=${aws_instance.postgres.private_ip}" >> /home/ec2-user/.bashrc
-    echo "export RABBITMQ_HOST=${aws_instance.rabbitmq.private_ip}" >> /home/ec2-user/.bashrc
-    export DB_HOST=${aws_instance.postgres.private_ip}
-    export RABBITMQ_HOST=${aws_instance.rabbitmq.private_ip}
-    
-    # INSTALAMOS psycopg2-binary en vez de redis
-    python3 -m venv venv && venv/bin/pip install psycopg2-binary pika
-    
-    # Arrancar API y configurar reinicios con systemd de forma segura (CAMBIADO A DB_HOST y postgres.private_ip)
-    sudo bash -c "echo -e '[Unit]\nDescription=Indirect Worker\nAfter=network.target\n\n[Service]\nType=simple\nUser=ec2-user\nWorkingDirectory=/home/ec2-user/archivosWorker\nEnvironment=DB_HOST=${aws_instance.postgres.private_ip}\nEnvironment=RABBITMQ_HOST=${aws_instance.rabbitmq.private_ip}\nExecStart=/home/ec2-user/archivosWorker/venv/bin/python3 indirect_worker.py\nRestart=always\nRestartSec=5\nLimitNOFILE=65535\n\n[Install]\nWantedBy=multi-user.target' > /etc/systemd/system/indirect-worker.service"
-    sudo systemctl daemon-reload
-    sudo systemctl enable indirect-worker
-    sudo systemctl start indirect-worker
   EOF
 }
 
@@ -225,7 +175,6 @@ resource "aws_instance" "client" {
   
   user_data = <<-EOF
     #!/bin/bash
-    # Límites de red para el cliente
     echo "fs.file-max = 2097152" >> /etc/sysctl.conf
     echo "net.core.somaxconn = 65535" >> /etc/sysctl.conf
     echo "net.ipv4.tcp_max_syn_backlog = 65535" >> /etc/sysctl.conf
@@ -245,12 +194,97 @@ resource "aws_instance" "client" {
     cd archivosCliente
     python3 -m venv venv && venv/bin/pip install pika redis aiohttp uvloop
     
-    # Guardamos las IPs para el cliente y el ulimit automático
     echo "export RABBITMQ_HOST=${aws_instance.rabbitmq.private_ip}" >> /home/ec2-user/.bashrc
     echo "ulimit -n 65535" >> /home/ec2-user/.bashrc
   EOF
 }
 
+# ==========================================
+# AWS LAMBDA (Escalado Dinámico Máx 9)
+# ==========================================
+data "aws_iam_role" "lab_role" {
+  name = "LabRole"
+}
+
+data "aws_vpc" "default" {
+  default = true
+}
+
+data "aws_subnets" "default" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.default.id]
+  }
+}
+
+# 2. La función Lambda con la limitación de concurrencia
+resource "aws_lambda_function" "worker" {
+  # Cambiamos esto para que lea directamente el archivo que has creado
+  filename                       = "../archivosWorker/dummy_worker.zip" 
+  
+  # Añadimos esto para que Terraform detecte si haces cambios en el ZIP en el futuro
+  source_code_hash               = filebase64sha256("../archivosWorker/dummy_worker.zip") 
+  
+  function_name                  = "ticket-worker"
+  role                           = data.aws_iam_role.lab_role.arn
+  handler                        = "indirect_worker.lambda_handler"
+  runtime                        = "python3.10"
+  timeout                        = 30 
+  reserved_concurrent_executions = 9  
+
+  vpc_config {
+    subnet_ids         = data.aws_subnets.default.ids
+    security_group_ids = [aws_security_group.worker_sg.id]
+  }
+
+  environment {
+    variables = {
+      DB_HOST       = aws_instance.postgres.private_ip
+      RABBITMQ_HOST = aws_instance.rabbitmq.private_ip
+    }
+  }
+}
+
+# 3. Credenciales para que Lambda pueda leer de RabbitMQ (Secrets Manager)
+resource "aws_secretsmanager_secret" "rabbitmq_secret" {
+  name                    = "rabbitmq_auth_lambda"
+  recovery_window_in_days = 0 # Permite borrarlo y recrearlo rápidamente
+}
+
+resource "aws_secretsmanager_secret_version" "rabbitmq_secret_val" {
+  secret_id     = aws_secretsmanager_secret.rabbitmq_secret.id
+  secret_string = jsonencode({
+    username = "admin"
+    password = "admin123"
+  })
+}
+
+# 4. El "Gatillo": Conecta RabbitMQ con tu Lambda
+resource "aws_lambda_event_source_mapping" "rabbitmq_trigger" {
+  function_name = aws_lambda_function.worker.arn
+  queues        = ["booking_queue"]
+  batch_size    = 100 # Coge 100 mensajes de golpe por cada Lambda
+
+  self_managed_event_source {
+    endpoints = {
+      URI = "amqp://${aws_instance.rabbitmq.private_ip}:5672"
+    }
+  }
+
+  source_access_configuration {
+    type = "BASIC_AUTH"
+    uri  = aws_secretsmanager_secret.rabbitmq_secret.arn
+  }
+
+  source_access_configuration {
+    type = "VIRTUAL_HOST"
+    uri  = "/"
+  }
+}
+
+# ==========================================
+# OUTPUTS
+# ==========================================
 output "RABBITMQ_PANEL_WEB" { 
   value = "http://${aws_instance.rabbitmq.public_ip}:15672 (user: admin / pass: admin123)" 
 }
