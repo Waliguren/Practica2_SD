@@ -224,7 +224,7 @@ resource "aws_instance" "rabbitmq" {
     echo "* hard nofile 65535" >> /etc/security/limits.conf
 
     while pidof dnf > /dev/null; do sleep 5; done
-    dnf update -y && dnf install docker -y
+    dnf install -y docker
     systemctl start docker && systemctl enable docker
 
     docker run -d --name mi-rabbit --restart unless-stopped \
@@ -235,69 +235,13 @@ resource "aws_instance" "rabbitmq" {
     dnf install -y python3 python3-pip git
     pip3 install boto3 pika
 
-    cat > /home/ec2-user/forwarder.py << 'FWD'
-import os, json, time, boto3, pika, threading
-
-RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')
-SQS_QUEUE_URL = "${aws_sqs_queue.main.url}"
-BATCH_SIZE = 10
-POLL_INTERVAL = 0.05
-
-sqs = boto3.client('sqs', region_name='us-east-1')
-
-def forward_batch(channel):
-    messages = []
-    deliveries = []
-    for _ in range(BATCH_SIZE):
-        mf, props, body = channel.basic_get(queue='booking_queue', auto_ack=False)
-        if mf is None:
-            break
-        messages.append({'Id': str(len(messages)), 'MessageBody': body.decode('utf-8')})
-        deliveries.append(mf.delivery_tag)
-    if not messages:
-        return 0
-    try:
-        response = sqs.send_message_batch(QueueUrl=SQS_QUEUE_URL, Entries=messages)
-        success_ids = {s['Id'] for s in response.get('Successful', [])}
-        for i, dt in enumerate(deliveries):
-            if str(i) in success_ids:
-                channel.basic_ack(delivery_tag=dt)
-            else:
-                channel.basic_nack(delivery_tag=dt, requeue=True)
-        return len(success_ids)
-    except Exception as e:
-        print(f"SQS error: {e}")
-        for dt in deliveries:
-            channel.basic_nack(delivery_tag=dt, requeue=True)
-        return 0
-
-def worker():
-    creds = pika.PlainCredentials('admin', 'admin123')
-    params = pika.ConnectionParameters(host=RABBITMQ_HOST, port=5672, credentials=creds, heartbeat=600)
-    conn = pika.BlockingConnection(params)
-    ch = conn.channel()
-    ch.queue_declare(queue='booking_queue', durable=True)
-    total = 0
-    while True:
-        c = forward_batch(ch)
-        total += c
-        if c == 0:
-            time.sleep(POLL_INTERVAL)
-        else:
-            print(f"Forwarded {c} (total: {total})")
-        if total > 0 and total % 1000 == 0:
-            print(f"[forwarder] {total} messages forwarded")
-
-for _ in range(3):
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
-
-while True:
-    time.sleep(10)
-FWD
+    cd /home/ec2-user
+    git clone https://github.com/Waliguren/practica2_sd.git repo
+    mv repo/archivosRabbit ./
+    rm -rf repo
 
     echo "export SQS_QUEUE_URL=${aws_sqs_queue.main.url}" >> /home/ec2-user/.bashrc
-    nohup python3 /home/ec2-user/forwarder.py > /home/ec2-user/forwarder.log 2>&1 &
+    nohup python3 /home/ec2-user/archivosRabbit/forwarder_v3.py > /home/ec2-user/forwarder.log 2>&1 &
   EOF
 }
 
