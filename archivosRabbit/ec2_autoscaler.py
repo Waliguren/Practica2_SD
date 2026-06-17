@@ -87,7 +87,7 @@ def main():
         desired = ((current_backlog / TARGET_RESPONSE_TIME) + arrival_rate) / CAPACITY_PER_WORKER
         workers = max(MIN_CONCURRENCY, min(MAX_WORKERS, int(desired + 0.5)))
 
-        print(f"📊 Backlog: {current_backlog} | Llegadas: {arrival_rate:.1f} msg/s | Lambdas: {workers}") {workers}")
+        print(f"📊 Backlog: {current_backlog} | Llegadas: {arrival_rate:.1f} msg/s | Lambdas: {workers}")
 
         # ENVIAMOS LAS MÉTRICAS A CLOUDWATCH
         enviar_metricas_cloudwatch(current_backlog, arrival_rate, workers, CAPACITY_PER_WORKER)
