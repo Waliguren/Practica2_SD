@@ -1,4 +1,4 @@
-# Concert Ticket Benchmark – Unnumbered Seats
+# Concert Ticket Benchmark - Unnumbered Seats
 # Total tickets: 20000
 # Format: BUY <client_id> <request_id>
 

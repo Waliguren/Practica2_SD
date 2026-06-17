@@ -1,3 +1,13 @@
 clave-rabbitmq-server.pem
 .terraform/
 aws_keys.txt
+archivosWorker/build_pkg/
+archivosWorker/check_dummy/
+archivosWorker/check_scaling/
+archivosWorker/dummy_worker.zip
+archivosWorker/scaling_controller.zip
+*.pyc
+__pycache__/
+terraform.tfstate
+terraform.tfstate.backup
+.terraform.lock.hcl

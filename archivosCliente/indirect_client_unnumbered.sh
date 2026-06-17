@@ -1,11 +1,10 @@
 #!/bin/bash
-
-# Aseguramos que estamos en el entorno virtual
 if [ -d "venv" ]; then
     source venv/bin/activate
 else
-    echo "⚠️ No se encontró el entorno virtual 'venv'. Ejecutando con python3 global..."
+    echo "No venv found, using global python3..."
 fi
 
-# Ejecutamos el cliente pasándole el archivo de prueba
-python3 scripts/indirect_client.py benchmarks/benchmark_unnumbered_20000.txt
+MODE=${1:-file}
+PARAM=${2:-benchmarks/benchmark_unnumbered_20000.txt}
+python3 scripts/indirect_client.py "$MODE" "$PARAM"

@@ -1,209 +1,27 @@
-provider "aws" { 
-  region = "us-east-1" 
+provider "aws" {
+  region = "us-east-1"
 }
 
 data "aws_ami" "amazon_linux" {
   most_recent = true
   owners      = ["amazon"]
 
-  filter { 
+  filter {
     name   = "name"
-    values = ["al2023-ami-2023.*-x86_64"] 
+    values = ["al2023-ami-2023.*-x86_64"]
   }
-  filter { 
+  filter {
     name   = "virtualization-type"
-    values = ["hvm"] 
+    values = ["hvm"]
   }
 }
 
-# ==========================================
-# SECURITY GROUPS (Arquitectura Indirecta)
-# ==========================================
-resource "aws_security_group" "client_sg" {
-  name = "indirect_client_sg"
-  
-  ingress { 
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] 
-  }
-  egress { 
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"] 
-  }
-}
-
-resource "aws_security_group" "rabbitmq_sg" {
-  name = "indirect_rabbitmq_sg"
-  
-  ingress { 
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] 
-  }
-  ingress { 
-    from_port   = 15672
-    to_port     = 15672
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] 
-  } # Panel Web UI
-  ingress { 
-    from_port   = 5672
-    to_port     = 5672
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] 
-  } # AMQP para Workers y Cliente
-  egress { 
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"] 
-  }
-}
-
-resource "aws_security_group" "worker_sg" {
-  name = "indirect_worker_sg"
-  
-  ingress { 
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] 
-  }
-  egress { 
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"] 
-  }
-}
-
-resource "aws_security_group" "postgres_sg" {
-  name = "indirect_postgres_sg"
-  
-  ingress { 
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"] 
-  }
-  ingress { 
-    from_port       = 5432
-    to_port         = 5432
-    protocol        = "tcp"
-    security_groups = [aws_security_group.worker_sg.id, aws_security_group.client_sg.id] 
-  }
-  egress { 
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"] 
-  }
-}
-
-# ==========================================
-# INSTANCIAS EC2
-# ==========================================
-resource "aws_instance" "postgres" {
-  ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = "t3.micro"
-  key_name               = "clave-rabbitmq-server"
-  vpc_security_group_ids = [aws_security_group.postgres_sg.id]
-  tags                   = { Name = "Postgres-Indirect" }
-  
-  user_data = <<-EOF
-    #!/bin/bash
-    while pidof dnf > /dev/null; do sleep 5; done
-    dnf update -y && dnf install docker -y
-    systemctl start docker && systemctl enable docker
-    docker run -d --name mi-postgres --restart unless-stopped -e POSTGRES_USER=admin -e POSTGRES_PASSWORD=admin123 -e POSTGRES_DB=ticketdb -p 5432:5432 postgres:latest
-    
-    while pidof dnf > /dev/null; do sleep 5; done
-    dnf update -y && dnf install -y python3 python3-pip git
-    
-    cd /home/ec2-user 
-    git clone https://github.com/Waliguren/practica2_sd.git repo
-    mv repo/archivosPostgres ./
-    rm -rf repo
-
-    cd /home/ec2-user/archivosPostgres
-    
-    # Crear entorno virtual e instalar el conector de PostgreSQL
-    python3 -m venv venv
-    venv/bin/pip install psycopg2-binary
-    
-    # Ejecutar el script para crear las tablas y datos iniciales
-    venv/bin/python init_db.py
-  EOF
-}
-
-resource "aws_instance" "rabbitmq" {
-  ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = "t3.small"
-  key_name               = "clave-rabbitmq-server"
-  vpc_security_group_ids = [aws_security_group.rabbitmq_sg.id]
-  tags                   = { Name = "RabbitMQ-Server" }
-  
-  user_data = <<-EOF
-    #!/bin/bash
-    echo "fs.file-max = 2097152" >> /etc/sysctl.conf
-    echo "net.core.somaxconn = 65535" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_max_syn_backlog = 65535" >> /etc/sysctl.conf
-    echo "net.ipv4.ip_local_port_range = 1024 65535" >> /etc/sysctl.conf
-    sysctl -p
-    echo "* soft nofile 65535" >> /etc/security/limits.conf
-    echo "* hard nofile 65535" >> /etc/security/limits.conf
-
-    while pidof dnf > /dev/null; do sleep 5; done
-    dnf update -y && dnf install docker -y
-    systemctl start docker && systemctl enable docker
-    
-    docker run -d --name mi-rabbit --restart unless-stopped --ulimit nofile=65535:65535 -e RABBITMQ_DEFAULT_USER=admin -e RABBITMQ_DEFAULT_PASS=admin123 -p 5672:5672 -p 15672:15672 rabbitmq:3-management
-  EOF
-}
-
-resource "aws_instance" "client" {
-  ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = "t3.micro"
-  key_name               = "clave-rabbitmq-server"
-  vpc_security_group_ids = [aws_security_group.client_sg.id]
-  tags                   = { Name = "Client-Indirect" }
-  
-  user_data = <<-EOF
-    #!/bin/bash
-    echo "fs.file-max = 2097152" >> /etc/sysctl.conf
-    echo "net.core.somaxconn = 65535" >> /etc/sysctl.conf
-    echo "net.ipv4.tcp_max_syn_backlog = 65535" >> /etc/sysctl.conf
-    echo "net.ipv4.ip_local_port_range = 1024 65535" >> /etc/sysctl.conf
-    sysctl -p
-    echo "* soft nofile 65535" >> /etc/security/limits.conf
-    echo "* hard nofile 65535" >> /etc/security/limits.conf
-
-    while pidof dnf > /dev/null; do sleep 5; done
-    dnf update -y && dnf install -y python3 python3-pip git
-    
-    cd /home/ec2-user 
-    git clone https://github.com/Waliguren/practica2_sd.git repo
-    mv repo/archivosCliente ./
-    rm -rf repo
-    
-    cd archivosCliente
-    python3 -m venv venv && venv/bin/pip install pika redis aiohttp uvloop
-    
-    echo "export RABBITMQ_HOST=${aws_instance.rabbitmq.private_ip}" >> /home/ec2-user/.bashrc
-    echo "ulimit -n 65535" >> /home/ec2-user/.bashrc
-  EOF
-}
-
-# ==========================================
-# AWS LAMBDA (Escalado Dinámico Máx 9)
-# ==========================================
 data "aws_iam_role" "lab_role" {
   name = "LabRole"
+}
+
+data "aws_iam_instance_profile" "lab_profile" {
+  name = "LabInstanceProfile"
 }
 
 data "aws_vpc" "default" {
@@ -217,20 +35,322 @@ data "aws_subnets" "default" {
   }
 }
 
-# 2. La función Lambda con la limitación de concurrencia
+data "aws_caller_identity" "current" {}
+
+locals {
+  sqs_queue_name = "ticket-queue"
+  sqs_dlq_name   = "ticket-dlq"
+  lambda_name    = "ticket-worker"
+  scaling_lambda = "scaling-controller"
+  s3_bucket_name = "ticket-logs-${data.aws_caller_identity.current.account_id}"
+}
+
+# ==========================================
+# SQS DEAD-LETTER QUEUE
+# ==========================================
+resource "aws_sqs_queue" "dlq" {
+  name                      = local.sqs_dlq_name
+  message_retention_seconds = 86400
+}
+
+# ==========================================
+# SQS MAIN QUEUE
+# ==========================================
+resource "aws_sqs_queue" "main" {
+  name                       = local.sqs_queue_name
+  visibility_timeout_seconds = 30
+  message_retention_seconds  = 86400
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.dlq.arn
+    maxReceiveCount     = 3
+  })
+}
+
+# ==========================================
+# S3 BUCKET (logs)
+# ==========================================
+resource "aws_s3_bucket" "logs" {
+  bucket = local.s3_bucket_name
+}
+
+resource "aws_s3_bucket_versioning" "logs" {
+  bucket = aws_s3_bucket.logs.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
+# ==========================================
+# SECURITY GROUPS
+# ==========================================
+resource "aws_security_group" "client_sg" {
+  name = "indirect_client_sg"
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "rabbitmq_sg" {
+  name = "indirect_rabbitmq_sg"
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 15672
+    to_port     = 15672
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port   = 5672
+    to_port     = 5672
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "worker_sg" {
+  name = "indirect_worker_sg_v2"
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "postgres_sg" {
+  name = "indirect_postgres_sg"
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+  ingress {
+    from_port = 5432
+    to_port   = 5432
+    protocol  = "tcp"
+    security_groups = [
+      aws_security_group.worker_sg.id,
+      aws_security_group.client_sg.id
+    ]
+  }
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# ==========================================
+# EC2: POSTGRESQL
+# ==========================================
+resource "aws_instance" "postgres" {
+  ami                    = data.aws_ami.amazon_linux.id
+  instance_type          = "t3.micro"
+  key_name               = "clave-rabbitmq-server"
+  vpc_security_group_ids = [aws_security_group.postgres_sg.id]
+  tags                   = { Name = "Postgres-Indirect" }
+
+  user_data = <<-EOF
+    #!/bin/bash
+    while pidof dnf > /dev/null; do sleep 5; done
+    dnf update -y && dnf install docker -y
+    systemctl start docker && systemctl enable docker
+    docker run -d --name mi-postgres --restart unless-stopped \
+      -e POSTGRES_USER=admin -e POSTGRES_PASSWORD=admin123 \
+      -e POSTGRES_DB=ticketdb -p 5432:5432 postgres:latest
+
+    while pidof dnf > /dev/null; do sleep 5; done
+    dnf update -y && dnf install -y python3 python3-pip git
+
+    cd /home/ec2-user
+    git clone https://github.com/Waliguren/practica2_sd.git repo
+    mv repo/archivosPostgres ./
+    rm -rf repo
+
+    cd /home/ec2-user/archivosPostgres
+    python3 -m venv venv
+    venv/bin/pip install psycopg2-binary
+    venv/bin/python init_db.py
+  EOF
+}
+
+# ==========================================
+# EC2: RABBITMQ + FORWARDER
+# ==========================================
+resource "aws_instance" "rabbitmq" {
+  ami                    = data.aws_ami.amazon_linux.id
+  instance_type          = "t3.small"
+  key_name               = "clave-rabbitmq-server"
+  vpc_security_group_ids = [aws_security_group.rabbitmq_sg.id]
+  iam_instance_profile   = data.aws_iam_instance_profile.lab_profile.name
+  tags                   = { Name = "RabbitMQ-Server" }
+
+  user_data = <<-EOF
+    #!/bin/bash
+    echo "fs.file-max = 2097152" >> /etc/sysctl.conf
+    echo "net.core.somaxconn = 65535" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_max_syn_backlog = 65535" >> /etc/sysctl.conf
+    echo "net.ipv4.ip_local_port_range = 1024 65535" >> /etc/sysctl.conf
+    sysctl -p
+    echo "* soft nofile 65535" >> /etc/security/limits.conf
+    echo "* hard nofile 65535" >> /etc/security/limits.conf
+
+    while pidof dnf > /dev/null; do sleep 5; done
+    dnf update -y && dnf install docker -y
+    systemctl start docker && systemctl enable docker
+
+    docker run -d --name mi-rabbit --restart unless-stopped \
+      --ulimit nofile=65535:65535 \
+      -e RABBITMQ_DEFAULT_USER=admin -e RABBITMQ_DEFAULT_PASS=admin123 \
+      -p 5672:5672 -p 15672:15672 rabbitmq:3-management
+
+    dnf install -y python3 python3-pip git
+    pip3 install boto3 pika
+
+    cat > /home/ec2-user/forwarder.py << 'FWD'
+import os, json, time, boto3, pika, threading
+
+RABBITMQ_HOST = os.getenv('RABBITMQ_HOST', 'localhost')
+SQS_QUEUE_URL = "${aws_sqs_queue.main.url}"
+BATCH_SIZE = 10
+POLL_INTERVAL = 0.05
+
+sqs = boto3.client('sqs', region_name='us-east-1')
+
+def forward_batch(channel):
+    messages = []
+    deliveries = []
+    for _ in range(BATCH_SIZE):
+        mf, props, body = channel.basic_get(queue='booking_queue', auto_ack=False)
+        if mf is None:
+            break
+        messages.append({'Id': str(len(messages)), 'MessageBody': body.decode('utf-8')})
+        deliveries.append(mf.delivery_tag)
+    if not messages:
+        return 0
+    try:
+        response = sqs.send_message_batch(QueueUrl=SQS_QUEUE_URL, Entries=messages)
+        success_ids = {s['Id'] for s in response.get('Successful', [])}
+        for i, dt in enumerate(deliveries):
+            if str(i) in success_ids:
+                channel.basic_ack(delivery_tag=dt)
+            else:
+                channel.basic_nack(delivery_tag=dt, requeue=True)
+        return len(success_ids)
+    except Exception as e:
+        print(f"SQS error: {e}")
+        for dt in deliveries:
+            channel.basic_nack(delivery_tag=dt, requeue=True)
+        return 0
+
+def worker():
+    creds = pika.PlainCredentials('admin', 'admin123')
+    params = pika.ConnectionParameters(host=RABBITMQ_HOST, port=5672, credentials=creds, heartbeat=600)
+    conn = pika.BlockingConnection(params)
+    ch = conn.channel()
+    ch.queue_declare(queue='booking_queue', durable=True)
+    total = 0
+    while True:
+        c = forward_batch(ch)
+        total += c
+        if c == 0:
+            time.sleep(POLL_INTERVAL)
+        else:
+            print(f"Forwarded {c} (total: {total})")
+        if total > 0 and total % 1000 == 0:
+            print(f"[forwarder] {total} messages forwarded")
+
+for _ in range(3):
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+
+while True:
+    time.sleep(10)
+FWD
+
+    echo "export SQS_QUEUE_URL=${aws_sqs_queue.main.url}" >> /home/ec2-user/.bashrc
+    nohup python3 /home/ec2-user/forwarder.py > /home/ec2-user/forwarder.log 2>&1 &
+  EOF
+}
+
+# ==========================================
+# EC2: CLIENTE
+# ==========================================
+resource "aws_instance" "client" {
+  ami                    = data.aws_ami.amazon_linux.id
+  instance_type          = "t3.micro"
+  key_name               = "clave-rabbitmq-server"
+  vpc_security_group_ids = [aws_security_group.client_sg.id]
+  tags                   = { Name = "Client-Indirect" }
+
+  user_data = <<-EOF
+    #!/bin/bash
+    echo "fs.file-max = 2097152" >> /etc/sysctl.conf
+    echo "net.core.somaxconn = 65535" >> /etc/sysctl.conf
+    echo "net.ipv4.tcp_max_syn_backlog = 65535" >> /etc/sysctl.conf
+    echo "net.ipv4.ip_local_port_range = 1024 65535" >> /etc/sysctl.conf
+    sysctl -p
+    echo "* soft nofile 65535" >> /etc/security/limits.conf
+    echo "* hard nofile 65535" >> /etc/security/limits.conf
+
+    while pidof dnf > /dev/null; do sleep 5; done
+    dnf update -y && dnf install -y python3 python3-pip git
+
+    cd /home/ec2-user
+    git clone https://github.com/Waliguren/practica2_sd.git repo
+    mv repo/archivosCliente ./
+    rm -rf repo
+
+    cd archivosCliente
+    python3 -m venv venv
+    venv/bin/pip install pika psycopg2-binary
+
+    echo "export RABBITMQ_HOST=${aws_instance.rabbitmq.private_ip}" >> /home/ec2-user/.bashrc
+    echo "export DB_HOST=${aws_instance.postgres.private_ip}" >> /home/ec2-user/.bashrc
+    echo "ulimit -n 65535" >> /home/ec2-user/.bashrc
+  EOF
+}
+
+# ==========================================
+# LAMBDA: WORKER (procesa compras desde SQS)
+# ==========================================
 resource "aws_lambda_function" "worker" {
-  # Cambiamos esto para que lea directamente el archivo que has creado
-  filename                       = "../archivosWorker/dummy_worker.zip" 
-  
-  # Añadimos esto para que Terraform detecte si haces cambios en el ZIP en el futuro
-  source_code_hash               = filebase64sha256("../archivosWorker/dummy_worker.zip") 
-  
-  function_name                  = "ticket-worker"
+  filename                       = "../archivosWorker/dummy_worker.zip"
+  source_code_hash               = filebase64sha256("../archivosWorker/dummy_worker.zip")
+  function_name                  = local.lambda_name
   role                           = data.aws_iam_role.lab_role.arn
   handler                        = "indirect_worker.lambda_handler"
   runtime                        = "python3.10"
-  timeout                        = 30 
-  reserved_concurrent_executions = 9  
+  timeout                        = 30
+  reserved_concurrent_executions = 9
 
   vpc_config {
     subnet_ids         = data.aws_subnets.default.ids
@@ -240,55 +360,193 @@ resource "aws_lambda_function" "worker" {
   environment {
     variables = {
       DB_HOST       = aws_instance.postgres.private_ip
-      RABBITMQ_HOST = aws_instance.rabbitmq.private_ip
+      SQS_QUEUE_URL = aws_sqs_queue.main.url
     }
   }
 }
 
-# 3. Credenciales para que Lambda pueda leer de RabbitMQ (Secrets Manager)
-resource "aws_secretsmanager_secret" "rabbitmq_secret" {
-  name                    = "rabbitmq_auth_lambda"
-  recovery_window_in_days = 0 # Permite borrarlo y recrearlo rápidamente
+resource "aws_lambda_event_source_mapping" "sqs_trigger" {
+  event_source_arn        = aws_sqs_queue.main.arn
+  function_name           = aws_lambda_function.worker.arn
+  batch_size              = 10
+  function_response_types = ["ReportBatchItemFailures"]
 }
 
-resource "aws_secretsmanager_secret_version" "rabbitmq_secret_val" {
-  secret_id     = aws_secretsmanager_secret.rabbitmq_secret.id
-  secret_string = jsonencode({
-    username = "admin"
-    password = "admin123"
+# ==========================================
+# LAMBDA: SCALING CONTROLLER
+# ==========================================
+resource "aws_lambda_function" "scaling_controller" {
+  filename         = "../archivosWorker/scaling_controller.zip"
+  source_code_hash = filebase64sha256("../archivosWorker/scaling_controller.zip")
+  function_name    = local.scaling_lambda
+  role             = data.aws_iam_role.lab_role.arn
+  handler          = "scaling_controller.lambda_handler"
+  runtime          = "python3.10"
+  timeout          = 30
+
+  environment {
+    variables = {
+      SQS_QUEUE_URL        = aws_sqs_queue.main.url
+      LAMBDA_FUNCTION_NAME = local.lambda_name
+      TARGET_RESPONSE_TIME = "5"
+      MIN_CONCURRENCY      = "1"
+      MAX_CONCURRENCY      = "9"
+      CAPACITY_PER_WORKER  = "8.0"
+    }
+  }
+}
+
+resource "aws_cloudwatch_event_rule" "scaling_schedule" {
+  name                = "scaling-controller-1min"
+  schedule_expression = "rate(1 minute)"
+}
+
+resource "aws_cloudwatch_event_target" "scaling_target" {
+  rule = aws_cloudwatch_event_rule.scaling_schedule.name
+  arn  = aws_lambda_function.scaling_controller.arn
+}
+
+resource "aws_lambda_permission" "allow_events" {
+  statement_id  = "AllowExecutionFromCloudWatch"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.scaling_controller.function_name
+  principal     = "events.amazonaws.com"
+  source_arn    = aws_cloudwatch_event_rule.scaling_schedule.arn
+}
+
+# ==========================================
+# CLOUDWATCH DASHBOARD
+# ==========================================
+resource "aws_cloudwatch_dashboard" "main" {
+  dashboard_name = "TicketSystem-Dashboard"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      {
+        type   = "metric"
+        x      = 0
+        y      = 0
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/SQS", "ApproximateNumberOfMessagesVisible", { stat = "Average", label = "Backlog (visible)" }],
+            ["TicketSystem", "QueueBacklog", { stat = "Average", label = "Backlog (custom)" }]
+          ]
+          period = 30
+          stat   = "Average"
+          region = "us-east-1"
+          title  = "Queue Backlog"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 0
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Lambda", "ConcurrentExecutions", { label = "Concurrent executions", stat = "Maximum" }],
+            ["TicketSystem", "DesiredConcurrency", { label = "Desired concurrency", stat = "Average" }]
+          ]
+          period = 30
+          stat   = "Average"
+          region = "us-east-1"
+          title  = "Lambda Concurrency"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 6
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Lambda", "Invocations", { stat = "Sum", label = "Invocations" }]
+          ]
+          period = 30
+          stat   = "Sum"
+          region = "us-east-1"
+          title  = "Lambda Invocations"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 6
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["AWS/Lambda", "Duration", { stat = "Average", label = "Avg duration (ms)" }]
+          ]
+          period = 30
+          stat   = "Average"
+          region = "us-east-1"
+          title  = "Lambda Duration"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 0
+        y      = 12
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["TicketSystem", "ArrivalRate", { stat = "Average", label = "Arrival rate (msg/s)" }]
+          ]
+          period = 30
+          stat   = "Average"
+          region = "us-east-1"
+          title  = "Arrival Rate"
+        }
+      },
+      {
+        type   = "metric"
+        x      = 12
+        y      = 12
+        width  = 12
+        height = 6
+        properties = {
+          metrics = [
+            ["TicketSystem", "WorkerCapacity", { stat = "Average", label = "Capacity (msg/s)" }]
+          ]
+          period = 30
+          stat   = "Average"
+          region = "us-east-1"
+          title  = "Worker Capacity"
+        }
+      }
+    ]
   })
-}
-
-# 4. El "Gatillo": Conecta RabbitMQ con tu Lambda
-resource "aws_lambda_event_source_mapping" "rabbitmq_trigger" {
-  function_name = aws_lambda_function.worker.arn
-  queues        = ["booking_queue"]
-  batch_size    = 100 # Coge 100 mensajes de golpe por cada Lambda
-
-  self_managed_event_source {
-    endpoints = {
-      URI = "amqp://${aws_instance.rabbitmq.private_ip}:5672"
-    }
-  }
-
-  source_access_configuration {
-    type = "BASIC_AUTH"
-    uri  = aws_secretsmanager_secret.rabbitmq_secret.arn
-  }
-
-  source_access_configuration {
-    type = "VIRTUAL_HOST"
-    uri  = "/"
-  }
 }
 
 # ==========================================
 # OUTPUTS
 # ==========================================
-output "RABBITMQ_PANEL_WEB" { 
-  value = "http://${aws_instance.rabbitmq.public_ip}:15672 (user: admin / pass: admin123)" 
+output "RABBITMQ_PANEL_WEB" {
+  value = "http://${aws_instance.rabbitmq.public_ip}:15672 (user: admin / pass: admin123)"
 }
 
-output "CLIENTE_SSH" { 
-  value = "ssh -i clave-rabbitmq-server.pem ec2-user@${aws_instance.client.public_ip}" 
+output "CLIENTE_SSH" {
+  value = "ssh -i clave-rabbitmq-server.pem ec2-user@${aws_instance.client.public_ip}"
+}
+
+output "POSTGRES_SSH" {
+  value = "ssh -i clave-rabbitmq-server.pem ec2-user@${aws_instance.postgres.public_ip}"
+}
+
+output "SQS_QUEUE_URL" {
+  value = aws_sqs_queue.main.url
+}
+
+output "S3_BUCKET" {
+  value = aws_s3_bucket.logs.bucket
+}
+
+output "DASHBOARD_URL" {
+  value = "https://us-east-1.console.aws.amazon.com/cloudwatch/home?region=us-east-1#dashboards:name=TicketSystem-Dashboard"
 }

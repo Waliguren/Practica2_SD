@@ -8,31 +8,29 @@ DB_PASS = "admin123"
 DB_NAME = "ticketdb"
 
 def init_db():
-    # 1. Esperar a que PostgreSQL esté listo
     conn = None
     for i in range(15):
         try:
             conn = psycopg2.connect(dbname=DB_NAME, user=DB_USER, password=DB_PASS, host=DB_HOST, port="5432")
-            print("✅ Conectado a PostgreSQL.")
+            print("Connected to PostgreSQL.")
             break
         except Exception as e:
-            print(f"⏳ Esperando a PostgreSQL... ({i+1}/15)")
+            print(f"Waiting for PostgreSQL... ({i+1}/15)")
             time.sleep(3)
-            
+
     if not conn:
-        print("❌ Error: No se pudo conectar a PostgreSQL.")
+        print("Error: Could not connect to PostgreSQL.")
         sys.exit(1)
 
     cur = conn.cursor()
 
-    # 2. BORRAR TABLAS EXISTENTES (El "CASCADE" elimina también las relaciones si las hubiera)
-    print("🧹 Limpiando base de datos anterior...")
+    print("Cleaning database...")
     cur.execute("DROP TABLE IF EXISTS unnumbered_tickets CASCADE;")
     cur.execute("DROP TABLE IF EXISTS numbered_seats CASCADE;")
     cur.execute("DROP TABLE IF EXISTS transactions CASCADE;")
+    cur.execute("DROP TABLE IF EXISTS metric_log CASCADE;")
 
-    # 3. CREAR TABLAS DESDE CERO
-    print("🏗️ Creando esquema limpio...")
+    print("Creating fresh schema...")
     cur.execute("""
         CREATE TABLE unnumbered_tickets (
             id SERIAL PRIMARY KEY,
@@ -56,14 +54,29 @@ def init_db():
         );
     """)
 
-    # 4. INSERTAR DATOS INICIALES (Como acabamos de borrar la tabla, insertamos sin preguntar)
+    cur.execute("""
+        CREATE TABLE metric_log (
+            id SERIAL PRIMARY KEY,
+            experiment_id VARCHAR(100),
+            request_id VARCHAR(100) UNIQUE,
+            client_id VARCHAR(100),
+            status VARCHAR(10),
+            seat_type VARCHAR(20),
+            sent_timestamp VARCHAR(50),
+            processing_start TIMESTAMP,
+            processing_end TIMESTAMP,
+            latency_ms INTEGER,
+            recorded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
     cur.execute("INSERT INTO unnumbered_tickets (available_tickets) VALUES (100000);")
-    print("✅ Se han restaurado las 100.000 entradas no numeradas.")
+    print("Restored 100,000 unnumbered tickets.")
 
     conn.commit()
     cur.close()
     conn.close()
-    print("🚀 Base de datos reiniciada con éxito y lista para un nuevo test.")
+    print("Database initialized and ready.")
 
 if __name__ == "__main__":
     init_db()
