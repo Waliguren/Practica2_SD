@@ -242,7 +242,7 @@ resource "aws_instance" "rabbitmq" {
 
     export SQS_QUEUE_URL=${aws_sqs_queue.main.url}
     echo "export SQS_QUEUE_URL=${aws_sqs_queue.main.url}" >> /home/ec2-user/.bashrc
-    nohup python3 /home/ec2-user/archivosRabbit/forwarder.py > /home/ec2-user/forwarder.log 2>&1 &
+    nohup python3 /home/ec2-user/archivosRabbit/ec2_autoscaler.py > /home/ec2-user/ec2_autoscaler.log 2>&1 &
   EOF
 }
 
@@ -295,7 +295,7 @@ resource "aws_lambda_function" "worker" {
   handler                        = "indirect_worker.lambda_handler"
   runtime                        = "python3.10"
   timeout                        = 30
-  reserved_concurrent_executions = 5
+  reserved_concurrent_executions = 9
 
   vpc_config {
     subnet_ids         = data.aws_subnets.default.ids
