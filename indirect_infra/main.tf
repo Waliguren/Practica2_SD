@@ -326,8 +326,7 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/SQS", "ApproximateNumberOfMessagesVisible", { stat = "Average", label = "Backlog (visible)" }],
-            ["TicketSystem", "QueueBacklog", { stat = "Average", label = "Backlog (custom)" }]
+            ["TicketSystem", "QueueBacklog", { stat = "Average", label = "Backlog RabbitMQ" }]
           ]
           period = 30
           stat   = "Average"
