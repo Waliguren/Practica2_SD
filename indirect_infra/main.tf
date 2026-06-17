@@ -63,7 +63,7 @@ resource "aws_sqs_queue" "main" {
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.dlq.arn
-    maxReceiveCount     = 3
+    maxReceiveCount     = 10
   })
 }
 
@@ -350,7 +350,7 @@ resource "aws_lambda_function" "worker" {
   handler                        = "indirect_worker.lambda_handler"
   runtime                        = "python3.10"
   timeout                        = 30
-  reserved_concurrent_executions = 9
+  reserved_concurrent_executions = 5
 
   vpc_config {
     subnet_ids         = data.aws_subnets.default.ids
@@ -390,7 +390,7 @@ resource "aws_lambda_function" "scaling_controller" {
       LAMBDA_FUNCTION_NAME = local.lambda_name
       TARGET_RESPONSE_TIME = "5"
       MIN_CONCURRENCY      = "1"
-      MAX_CONCURRENCY      = "9"
+      MAX_CONCURRENCY      = "5"
       CAPACITY_PER_WORKER  = "8.0"
     }
   }

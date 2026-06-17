@@ -1,5 +1,6 @@
 import os
 import json
+import time
 import boto3
 from datetime import datetime, timedelta, timezone
 
@@ -7,7 +8,7 @@ SQS_QUEUE_URL = os.getenv('SQS_QUEUE_URL')
 LAMBDA_FUNCTION_NAME = os.getenv('LAMBDA_FUNCTION_NAME', 'ticket-worker')
 TARGET_RESPONSE_TIME = int(os.getenv('TARGET_RESPONSE_TIME', '5'))
 MIN_CONCURRENCY = int(os.getenv('MIN_CONCURRENCY', '1'))
-MAX_CONCURRENCY = int(os.getenv('MAX_CONCURRENCY', '9'))
+MAX_CONCURRENCY = int(os.getenv('MAX_CONCURRENCY', '5'))
 CAPACITY_PER_WORKER = float(os.getenv('CAPACITY_PER_WORKER', '8.0'))
 AWS_REGION = os.getenv('AWS_REGION', 'us-east-1')
 
@@ -68,47 +69,54 @@ def get_worker_capacity():
 
 def lambda_handler(event, context):
     try:
-        backlog = get_queue_backlog()
-        arrival_rate = get_arrival_rate()
-        capacity = get_worker_capacity()
+        results = []
+        for ciclo in range(2):
+            backlog = get_queue_backlog()
+            arrival_rate = get_arrival_rate()
+            capacity = get_worker_capacity()
 
-        desired = ((backlog / TARGET_RESPONSE_TIME) + arrival_rate) / capacity
-        desired = max(MIN_CONCURRENCY, min(MAX_CONCURRENCY, int(desired + 0.5)))
+            desired = ((backlog / TARGET_RESPONSE_TIME) + arrival_rate) / capacity
+            desired = max(MIN_CONCURRENCY, min(MAX_CONCURRENCY, int(desired + 0.5)))
 
-        current_config = lambda_client.get_function_configuration(
-            FunctionName=LAMBDA_FUNCTION_NAME
-        )
-        current_concurrency = current_config.get('ReservedConcurrentExecutions', 0)
-
-        if desired != current_concurrency:
-            lambda_client.put_function_concurrency(
-                FunctionName=LAMBDA_FUNCTION_NAME,
-                ReservedConcurrentExecutions=int(desired)
+            current_config = lambda_client.get_function_configuration(
+                FunctionName=LAMBDA_FUNCTION_NAME
             )
-            print(f"Scaled: {current_concurrency} -> {desired} (backlog={backlog}, "
-                  f"arrival={arrival_rate:.1f}/s, capacity={capacity:.1f}/s)")
+            current_concurrency = current_config.get('ReservedConcurrentExecutions', 0)
 
-        cloudwatch.put_metric_data(
-            Namespace='TicketSystem',
-            MetricData=[
-                {'MetricName': 'DesiredConcurrency', 'Value': float(desired), 'Unit': 'Count'},
-                {'MetricName': 'CurrentConcurrency', 'Value': float(current_concurrency), 'Unit': 'Count'},
-                {'MetricName': 'QueueBacklog', 'Value': float(backlog), 'Unit': 'Count'},
-                {'MetricName': 'ArrivalRate', 'Value': float(arrival_rate), 'Unit': 'Count/Second'},
-                {'MetricName': 'WorkerCapacity', 'Value': float(capacity), 'Unit': 'Count/Second'},
-            ]
-        )
+            if desired != current_concurrency:
+                lambda_client.put_function_concurrency(
+                    FunctionName=LAMBDA_FUNCTION_NAME,
+                    ReservedConcurrentExecutions=int(desired)
+                )
+                print(f"[ciclo {ciclo}] Scaled: {current_concurrency} -> {desired} (backlog={backlog}, "
+                      f"arrival={arrival_rate:.1f}/s, capacity={capacity:.1f}/s)")
 
-        return {
-            'statusCode': 200,
-            'body': json.dumps({
+            cloudwatch.put_metric_data(
+                Namespace='TicketSystem',
+                MetricData=[
+                    {'MetricName': 'DesiredConcurrency', 'Value': float(desired), 'Unit': 'Count'},
+                    {'MetricName': 'CurrentConcurrency', 'Value': float(current_concurrency), 'Unit': 'Count'},
+                    {'MetricName': 'QueueBacklog', 'Value': float(backlog), 'Unit': 'Count'},
+                    {'MetricName': 'ArrivalRate', 'Value': float(arrival_rate), 'Unit': 'Count/Second'},
+                    {'MetricName': 'WorkerCapacity', 'Value': float(capacity), 'Unit': 'Count/Second'},
+                ]
+            )
+
+            results.append({
+                'ciclo': ciclo,
                 'desired_concurrency': desired,
                 'current_concurrency': current_concurrency,
                 'backlog': backlog,
                 'arrival_rate': arrival_rate,
                 'worker_capacity': capacity
             })
-        }
+
+            if ciclo == 0:
+                print(f"[ciclo 0] Esperando 30s para siguiente evaluacion...")
+                time.sleep(30)
+
+        print(f"Scaling controller completed: {json.dumps(results)}")
+        return {'statusCode': 200, 'body': json.dumps(results)}
 
     except Exception as e:
         print(f"Scaling controller error: {e}")

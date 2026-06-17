@@ -1,35 +1,33 @@
-import os
-import sys
-import json
-import time
-import psycopg2
+import os, sys, json, time, psycopg2, traceback
 from datetime import datetime, timezone
 
 DB_HOST = os.getenv('DB_HOST', 'localhost')
-
 conn = None
 
 def conectar_postgresql():
     global conn
-    if conn is None or conn.closed != 0:
-        conn = psycopg2.connect(
-            dbname="ticketdb", user="admin", password="admin123",
-            host=DB_HOST, port="5432"
-        )
-        conn.autocommit = False
+    try:
+        if conn is not None and conn.closed == 0:
+            return conn
+    except:
+        pass
+    conn = psycopg2.connect(
+        dbname="ticketdb", user="admin", password="admin123",
+        host=DB_HOST, port="5432"
+    )
+    conn.autocommit = False
     return conn
 
 def lambda_handler(event, context):
+    global conn
     db_conn = conectar_postgresql()
     cur = db_conn.cursor()
     failed_ids = []
 
     for record in event.get('Records', []):
         processing_start = datetime.now(timezone.utc)
-
         try:
             body = json.loads(record['body'])
-            message_id = record.get('messageId', 'unknown')
         except Exception as e:
             print(f"Error parsing message: {e}")
             failed_ids.append({'itemIdentifier': record.get('messageId', '')})
@@ -43,10 +41,14 @@ def lambda_handler(event, context):
         es_numerada = seat_id is not None
 
         try:
-            cur.execute("SELECT status FROM transactions WHERE request_id = %s;", (request_id,))
-            existing = cur.fetchone()
-            if existing:
-                db_conn.rollback()
+            cur.execute("""
+                INSERT INTO transactions (request_id, client_id, status, completed_at)
+                VALUES (%s, %s, 'processing', CURRENT_TIMESTAMP)
+                ON CONFLICT (request_id) DO NOTHING
+                RETURNING request_id;
+            """, (request_id, client_id))
+            if cur.fetchone() is None:
+                db_conn.commit()
                 continue
 
             time.sleep(0.1)
@@ -58,10 +60,7 @@ def lambda_handler(event, context):
                     WHERE available_tickets > 0
                     RETURNING available_tickets;
                 """)
-                if cur.fetchone():
-                    status = "200"
-                else:
-                    status = "409"
+                status = "200" if cur.fetchone() else "409"
             else:
                 cur.execute("""
                     INSERT INTO numbered_seats (seat_id, status)
@@ -69,15 +68,9 @@ def lambda_handler(event, context):
                     ON CONFLICT (seat_id) DO NOTHING
                     RETURNING seat_id;
                 """, (str(seat_id),))
-                if cur.fetchone():
-                    status = "200"
-                else:
-                    status = "409"
+                status = "200" if cur.fetchone() else "409"
 
-            cur.execute("""
-                INSERT INTO transactions (request_id, client_id, status, completed_at)
-                VALUES (%s, %s, %s, CURRENT_TIMESTAMP);
-            """, (request_id, client_id, status))
+            cur.execute("UPDATE transactions SET status = %s WHERE request_id = %s;", (status, request_id))
 
             processing_end = datetime.now(timezone.utc)
             latency_ms = int((processing_end - processing_start).total_seconds() * 1000)
@@ -98,15 +91,22 @@ def lambda_handler(event, context):
 
         except Exception as e:
             print(f"Error processing {request_id}: {e}")
-            db_conn.rollback()
+            traceback.print_exc()
+            try:
+                db_conn.rollback()
+            except:
+                pass
+            try:
+                db_conn.close()
+            except:
+                pass
+            conn = None
+            db_conn = conectar_postgresql()
+            cur = db_conn.cursor()
             failed_ids.append({'itemIdentifier': record.get('messageId', '')})
 
     cur.close()
 
     if failed_ids:
-        return {
-            'statusCode': 200,
-            'batchItemFailures': failed_ids
-        }
-
+        return {'statusCode': 200, 'batchItemFailures': failed_ids}
     return {'statusCode': 200, 'body': 'Batch processed'}
