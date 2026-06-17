@@ -128,7 +128,7 @@ resource "aws_instance" "postgres" {
     dnf update -y && dnf install -y python3 python3-pip git
     
     cd /home/ec2-user 
-    git clone https://github.com/waliguren/nuevapractica1_sd.git repo
+    git clone https://github.com/Waliguren/practica2_sd.git repo
     mv repo/archivosPostgres ./
     rm -rf repo
 
@@ -193,7 +193,7 @@ resource "aws_instance" "worker" {
     dnf update -y && dnf install -y python3 python3-pip git
     
     cd /home/ec2-user 
-    git clone https://github.com/waliguren/nuevapractica1_sd.git repo
+    git clone https://github.com/Waliguren/practica2_sd.git repo
     mv repo/archivosWorker ./
     rm -rf repo
     
@@ -238,7 +238,7 @@ resource "aws_instance" "client" {
     dnf update -y && dnf install -y python3 python3-pip git
     
     cd /home/ec2-user 
-    git clone https://github.com/waliguren/nuevapractica1_sd.git repo
+    git clone https://github.com/Waliguren/practica2_sd.git repo
     mv repo/archivosCliente ./
     rm -rf repo
     
