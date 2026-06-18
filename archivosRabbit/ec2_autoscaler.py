@@ -9,7 +9,7 @@ QUEUE_NAME = "booking_queue"
 LAMBDA_NAME = "ticket-worker"
 
 TARGET_RESPONSE_TIME = 5
-MIN_CONCURRENCY = 1
+MIN_CONCURRENCY = 0
 MAX_WORKERS = 9
 CAPACITY_PER_WORKER = 8.0
 
@@ -37,6 +37,23 @@ def get_backlog(channel):
         return q.method.message_count
     except:
         return 0
+
+import urllib.request
+import base64
+
+def get_rabbitmq_ack_rate():
+    try:
+        url = f"http://{RABBITMQ_HOST}:15672/api/queues/%2F/{QUEUE_NAME}"
+        req = urllib.request.Request(url)
+        auth = base64.b64encode(b"admin:admin123").decode("utf-8")
+        req.add_header("Authorization", f"Basic {auth}")
+        with urllib.request.urlopen(req, timeout=2) as response:
+            data = json.loads(response.read().decode("utf-8"))
+            stats = data.get("message_stats", {})
+            ack_details = stats.get("ack_details", {})
+            return float(ack_details.get("rate", 0.0))
+    except Exception:
+        return 0.0
 
 def enviar_metricas_cloudwatch(backlog, arrival_rate, desired_workers, capacity):
     try:
@@ -67,19 +84,24 @@ def main():
         current_active_workers = len(active_workers_timestamps)
         
         current_backlog = get_backlog(channel)
+        ack_rate = get_rabbitmq_ack_rate()
 
-        #Calcular Arrival Rate estimando
+        if current_active_workers > 0 and ack_rate > 0:
+            real_capacity_per_worker = ack_rate / current_active_workers
+            real_capacity_per_worker = max(1.0, min(20.0, real_capacity_per_worker))
+        else:
+            real_capacity_per_worker = CAPACITY_PER_WORKER
+
         dt = now - last_time
         delta = current_backlog - last_backlog
-        estimated_processed = current_active_workers * CAPACITY_PER_WORKER
-        estimated_arrivals = max(0, delta + estimated_processed)
-        arrival_rate = estimated_arrivals / dt if dt > 0 else 0
+        
+        arrival_rate = max(0, (delta / dt) + ack_rate)
 
-        desired = ((current_backlog / TARGET_RESPONSE_TIME) + arrival_rate) / CAPACITY_PER_WORKER
+        desired = ((current_backlog / TARGET_RESPONSE_TIME) + arrival_rate) / real_capacity_per_worker
         workers_needed = max(MIN_CONCURRENCY, min(MAX_WORKERS, int(desired + 0.5)))
 
-        print(f"📊 Backlog: {current_backlog} | Llegadas: {arrival_rate:.1f} | Activas: {current_active_workers} | Deseadas: {workers_needed}")
-        enviar_metricas_cloudwatch(current_backlog, arrival_rate, workers_needed, CAPACITY_PER_WORKER)
+        print(f"📊 Backlog: {current_backlog} | Llegadas: {arrival_rate:.1f} | Activas: {current_active_workers} | Deseadas: {workers_needed} | CapacidadReal: {real_capacity_per_worker:.1f}")
+        enviar_metricas_cloudwatch(current_backlog, arrival_rate, workers_needed, real_capacity_per_worker)
 
         if workers_needed > current_active_workers:
             a_invocar = workers_needed - current_active_workers
