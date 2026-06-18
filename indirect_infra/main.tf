@@ -38,33 +38,9 @@ data "aws_subnets" "default" {
 data "aws_caller_identity" "current" {}
 
 locals {
-  sqs_queue_name = "ticket-queue"
-  sqs_dlq_name   = "ticket-dlq"
   lambda_name    = "ticket-worker"
   scaling_lambda = "scaling-controller"
   s3_bucket_name = "ticket-logs-${data.aws_caller_identity.current.account_id}"
-}
-
-# ==========================================
-# SQS DEAD-LETTER QUEUE
-# ==========================================
-resource "aws_sqs_queue" "dlq" {
-  name                      = local.sqs_dlq_name
-  message_retention_seconds = 86400
-}
-
-# ==========================================
-# SQS MAIN QUEUE
-# ==========================================
-resource "aws_sqs_queue" "main" {
-  name                       = local.sqs_queue_name
-  visibility_timeout_seconds = 30
-  message_retention_seconds  = 86400
-
-  redrive_policy = jsonencode({
-    deadLetterTargetArn = aws_sqs_queue.dlq.arn
-    maxReceiveCount     = 10
-  })
 }
 
 # ==========================================
@@ -240,8 +216,6 @@ resource "aws_instance" "rabbitmq" {
     mv repo/archivosRabbit ./
     rm -rf repo
 
-    export SQS_QUEUE_URL=${aws_sqs_queue.main.url}
-    echo "export SQS_QUEUE_URL=${aws_sqs_queue.main.url}" >> /home/ec2-user/.bashrc
     nohup python3 /home/ec2-user/archivosRabbit/ec2_autoscaler.py > /home/ec2-user/ec2_autoscaler.log 2>&1 &
   EOF
 }
@@ -285,7 +259,7 @@ resource "aws_instance" "client" {
 }
 
 # ==========================================
-# LAMBDA: WORKER (procesa compras desde SQS)
+# LAMBDA: WORKER 
 # ==========================================
 resource "aws_lambda_function" "worker" {
   filename                       = "../archivosWorker/dummy_worker.zip"
@@ -342,7 +316,7 @@ resource "aws_cloudwatch_dashboard" "main" {
         height = 6
         properties = {
           metrics = [
-            ["AWS/Lambda", "ConcurrentExecutions", { label = "Concurrent executions", stat = "Maximum" }],
+            ["AWS/Lambda", "ConcurrentExecutions", { label = "Concurrent executions", stat = "Average" }],
             ["TicketSystem", "DesiredConcurrency", { label = "Desired concurrency", stat = "Average" }]
           ]
           period = 30
@@ -432,10 +406,6 @@ output "CLIENTE_SSH" {
 
 output "POSTGRES_SSH" {
   value = "ssh -i clave-rabbitmq-server.pem ec2-user@${aws_instance.postgres.public_ip}"
-}
-
-output "SQS_QUEUE_URL" {
-  value = aws_sqs_queue.main.url
 }
 
 output "S3_BUCKET" {
