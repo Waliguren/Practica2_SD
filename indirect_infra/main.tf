@@ -305,7 +305,7 @@ resource "aws_lambda_function" "worker" {
   environment {
     variables = {
       DB_HOST       = aws_instance.postgres.private_ip
-      SQS_QUEUE_URL = aws_sqs_queue.main.url
+      RABBITMQ_HOST = aws_instance.rabbitmq.private_ip
     }
   }
 }

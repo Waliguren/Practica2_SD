@@ -20,6 +20,8 @@ class BenchmarkClient:
         self.channel = self.connection.channel()
         self.channel.confirm_delivery()
 
+        self.channel.queue_declare(queue=QUEUE_NAME, durable=True)
+
     def _tasa_zt(self, t):
         if t < 30:
             return 50
