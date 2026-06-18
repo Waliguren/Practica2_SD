@@ -17,7 +17,7 @@ lambda_client = boto3.client('lambda', region_name='us-east-1')
 cloudwatch_client = boto3.client('cloudwatch', region_name='us-east-1')
 
 # ESTADO LOCAL DEL WORKER POOL
-current_active_workers = 0
+active_workers_timestamps = []
 last_backlog = 0
 last_time = time.time()
 
@@ -53,7 +53,7 @@ def enviar_metricas_cloudwatch(backlog, arrival_rate, desired_workers, capacity)
         pass
 
 def main():
-    global last_backlog, last_time, current_active_workers
+    global last_backlog, last_time, active_workers_timestamps
     print(f"🚀 Iniciando Autoscaler (Worker Pool + Poison Pill)...")
     
     connection, channel = conectar_rabbitmq()
@@ -61,6 +61,10 @@ def main():
     while True:
         time.sleep(1) 
         now = time.time()
+        
+        # Limpiar workers muertos (TTL = 25 segundos)
+        active_workers_timestamps = [ts for ts in active_workers_timestamps if now - ts < 25]
+        current_active_workers = len(active_workers_timestamps)
         
         current_backlog = get_backlog(channel)
 
@@ -83,7 +87,7 @@ def main():
             for _ in range(a_invocar):
                 try:
                     lambda_client.invoke(FunctionName=LAMBDA_NAME, InvocationType='Event', Payload=json.dumps({}))
-                    current_active_workers += 1
+                    active_workers_timestamps.append(now)
                 except: pass
                 
         elif workers_needed < current_active_workers:
@@ -97,7 +101,8 @@ def main():
                         body=json.dumps({"comando": "KILL"}),
                         properties=pika.BasicProperties(priority=10) 
                     )
-                    current_active_workers -= 1
+                    if active_workers_timestamps:
+                        active_workers_timestamps.pop(0)
                 except: pass
 
         last_backlog = current_backlog
